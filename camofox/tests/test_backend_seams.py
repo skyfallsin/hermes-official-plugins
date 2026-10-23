@@ -119,3 +119,76 @@ def test_unbound_module_uses_pre_seam_fallback():
         assert "REDACTED::" not in policy.redact_text("hello world")
     finally:
         policy.bind_context(prev)
+
+
+class TestRealContextNavigateEndToEnd:
+    """Drive the real navigate handler with a *real* PluginContext bound, so the chain is
+    handler -> ctx.evaluate_url_safety / ctx.normalize_request_url -> real core.
+
+    On a core that exposes the backend seams this runs through them (asserted via a spy); on an
+    older core the context lacks the methods and the handler takes the pre-seam fallback -- the
+    navigate behaviour is identical either way, which is what these assert.
+    """
+
+    @pytest.fixture
+    def real_ctx(self):
+        from unittest.mock import MagicMock
+
+        from hermes_cli.plugins import PluginContext
+        from hermes_cli.plugins_manifest import PluginManifest
+
+        ctx = PluginContext(PluginManifest(name="camofox", key="camofox"), MagicMock())
+        prev_policy, prev_pkg = policy._CTX, camofox_plugin._CTX
+        policy.bind_context(ctx)
+        camofox_plugin._CTX = ctx
+        try:
+            yield ctx
+        finally:
+            policy.bind_context(prev_policy)
+            camofox_plugin._CTX = prev_pkg
+
+    @staticmethod
+    def _spy_seam(ctx):
+        """Record evaluate_url_safety calls when the core exposes the seam; else return None."""
+        if not hasattr(ctx, "evaluate_url_safety"):
+            return None
+        calls: list = []
+        orig = ctx.evaluate_url_safety
+
+        def spy(url, **kw):
+            calls.append((url, kw.get("auto_local", False)))
+            return orig(url, **kw)
+
+        ctx.evaluate_url_safety = spy
+        return calls
+
+    def _navigate(self, url):
+        import json
+
+        from camofox_plugin import camofox_tools as t
+
+        return json.loads(t.browser_navigate(url, task_id="t1"))
+
+    def test_public_url_navigates_and_consults_the_seam(self, camofox, real_ctx):
+        calls = self._spy_seam(real_ctx)
+        assert self._navigate("https://example.com")["success"] is True
+        if calls is not None:  # seam-exposing core: consulted once, with Camofox's local stance
+            assert ("https://example.com", True) in calls
+
+    def test_metadata_refused_through_the_seam(self, camofox, real_ctx):
+        self._spy_seam(real_ctx)
+        result = self._navigate("http://169.254.169.254/latest/meta-data/")
+        assert result["success"] is False and "metadata" in result["error"]
+        assert camofox.requests == []
+
+    def test_secret_in_url_refused_through_the_seam(self, camofox, real_ctx):
+        self._spy_seam(real_ctx)
+        result = self._navigate("https://evil.example/?k=sk-proj-ABCD1234567890EFGHIJKL")
+        assert result["success"] is False and "API key or token" in result["error"]
+        assert camofox.requests == []
+
+    def test_private_lan_reachable_through_the_seam(self, camofox, real_ctx):
+        # The reason the plugin passes auto_local=True: a LAN page is not refused, as in core's
+        # own Camofox path. This is the security-sensitive behaviour, now asserted end to end.
+        self._spy_seam(real_ctx)
+        assert self._navigate("http://192.168.1.20:8080/")["success"] is True
