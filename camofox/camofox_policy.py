@@ -11,9 +11,12 @@
   under ``cache/web`` and the cut tells the model how to page through it with ``read_file``.
 * Typed text that looks like a secret is masked in what goes back to the model.
 
-The few core helpers used here (URL safety, website policy, secret redaction, the agent-visible
-cache path) have no documented plugin seam yet; they are imported where they are used and listed in
-the README as the seams this plugin asks core to publish.
+The core helpers used here (URL safety, website policy, secret redaction, the agent-visible cache
+path) are reached through the public ``ctx`` backend seams when the running Hermes core exposes them
+(``ctx.evaluate_url_safety``, ``ctx.redact_text``, ``ctx.agent_visible_cache_path``). On a core that
+predates those seams the module falls back to the equivalent internal import at its point of use, so
+the plugin keeps working across a version range; the ``ctx`` path imports no private core module.
+The one piece with no seam yet is URL normalization on navigate (``normalize_url_for_request``).
 """
 
 from __future__ import annotations
@@ -28,6 +31,17 @@ from typing import Any, Optional
 from hermes_cli.config import cfg_get, read_raw_config
 
 logger = logging.getLogger(__name__)
+
+# Set by the plugin's register(ctx) via bind_context(). When present and carrying a seam method, the
+# policy helpers below call core's public ctx seam instead of importing a core internal.
+_CTX: Any = None
+
+
+def bind_context(ctx: Any) -> None:
+    """Let this module prefer core's public backend seams over the pre-seam internal imports."""
+    global _CTX
+    _CTX = ctx
+
 
 DEFAULT_SNAPSHOT_THRESHOLD = 15000
 MIN_SNAPSHOT_THRESHOLD = 1000
@@ -52,7 +66,10 @@ def _browser_cfg(key: str, default: Any = None) -> Any:
 
 def redact_text(text: str) -> str:
     """Force-redact secrets in browser-originated text (tool output is a model boundary)."""
-    from agent.redact import redact_sensitive_text
+    ctx = _CTX
+    if ctx is not None and hasattr(ctx, "redact_text"):
+        return ctx.redact_text(text, force=True)
+    from agent.redact import redact_sensitive_text  # pre-seam fallback (Hermes without ctx.redact_text)
     return redact_sensitive_text(text, force=True)
 
 
@@ -88,17 +105,38 @@ def redact_typed_text(value: Any, typed_text: Any) -> Any:
 
 # ---- Navigation policy ----
 
+def _normalized_url(url: str) -> str:
+    """ASCII-normalize a navigate target. No ctx seam yet, so this stays an internal import."""
+    from tools.url_safety import normalize_url_for_request
+    return normalize_url_for_request(url)
+
+
+def navigation_policy_error(url: str) -> tuple[str, Optional[dict]]:
+    """``(normalized_url, error_or_None)`` for a ``browser_navigate`` target."""
+    ctx = _CTX
+    evaluate = getattr(ctx, "evaluate_url_safety", None) if ctx is not None else None
+    if evaluate is not None:
+        # auto_local=True keeps Camofox's local-browser stance: secret-in-URL, cloud-metadata and
+        # the website blocklist are enforced; the private/LAN floor is not, as in core's Camofox
+        # path. The seam normalizes internally for its checks; we normalize again for the value we
+        # hand the browser (idempotent). The blocklist branch already returns blocked_by_policy.
+        verdict = evaluate(url, auto_local=True)
+        if verdict is not None:
+            return url, verdict
+        return _normalized_url(url), None
+    return _navigation_policy_error_pre_seam(url)
+
+
 def _secret_url_error(url: str) -> Optional[dict]:
-    """Refuse URLs embedding an API key/token (raw and URL-decoded): a prompt injection could
-    otherwise exfiltrate secrets through the URL."""
+    """Pre-seam fallback: refuse URLs embedding an API key/token (raw and URL-decoded)."""
     import agent.redact as redact  # module attribute: core rebinds _PREFIX_RE when patterns are added
     if redact._PREFIX_RE.search(url) or redact._PREFIX_RE.search(urllib.parse.unquote(url)):
         return _err("Blocked: URL contains what appears to be an API key or token. Secrets must not be sent in URLs.")
     return None
 
 
-def navigation_policy_error(url: str) -> tuple[str, Optional[dict]]:
-    """``(normalized_url, error_or_None)`` for a ``browser_navigate`` target."""
+def _navigation_policy_error_pre_seam(url: str) -> tuple[str, Optional[dict]]:
+    """Navigation floor for a core without ``ctx.evaluate_url_safety``."""
     from tools.url_safety import is_always_blocked_url, normalize_url_for_request
     from tools.website_policy import check_website_access
 
@@ -216,7 +254,6 @@ def _store_full_snapshot(snapshot_text: str) -> Optional[str]:
     path the agent's file tools see, or None on failure."""
     try:
         from hermes_constants import get_hermes_dir
-        from tools.credential_files import to_agent_visible_cache_path
 
         content = redact_text(snapshot_text)
         if len(content) > MAX_STORED_SNAPSHOT_CHARS:
@@ -229,10 +266,19 @@ def _store_full_snapshot(snapshot_text: str) -> Optional[str]:
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:10]
         path = str(cache_dir / f"browser-snapshot-{digest}.txt")
         _write_cache_file(path, content)
-        return to_agent_visible_cache_path(path)
+        return _agent_visible_cache_path(path)
     except Exception as exc:
         logger.debug("Failed to store full browser snapshot: %s", exc)
         return None
+
+
+def _agent_visible_cache_path(path: str) -> str:
+    """Translate a host cache path to where the agent's terminal backend sees it."""
+    ctx = _CTX
+    if ctx is not None and hasattr(ctx, "agent_visible_cache_path"):
+        return ctx.agent_visible_cache_path(path)
+    from tools.credential_files import to_agent_visible_cache_path  # pre-seam fallback
+    return to_agent_visible_cache_path(path)
 
 
 def truncate_snapshot(snapshot_text: str, max_chars: Optional[int] = None) -> str:

@@ -20,12 +20,19 @@ logger = logging.getLogger(__name__)
 
 TOOLSET = "camofox"
 
+# Set at the top of register(ctx); lets core_bundles_camofox() use the public ctx seam.
+_CTX = None
+
 
 def core_bundles_camofox() -> bool:
     """True while the running Hermes core still ships its own Camofox backend.
 
-    ``PathFinder`` searches only ``tools.__path__``: ``importlib.util.find_spec`` would also consult
-    an editable dev install's meta-path finder and could answer for a different checkout."""
+    Prefers the public ``ctx.core_bundles_tool`` seam; on a core without it, falls back to the
+    ``PathFinder`` probe against ``tools.__path__`` (``importlib.util.find_spec`` would also consult
+    an editable dev install's meta-path finder and could answer for a different checkout)."""
+    ctx = _CTX
+    if ctx is not None and hasattr(ctx, "core_bundles_tool"):
+        return ctx.core_bundles_tool("browser_camofox")
     import tools
     return importlib.machinery.PathFinder.find_spec("tools.browser_camofox", list(tools.__path__)) is not None
 
@@ -36,13 +43,18 @@ def register(ctx) -> None:
     On a core that still bundles Camofox the built-in ``browser_*`` tools already route to Camofox
     when it is selected, so this copy registers nothing: two owners of the same tool names would
     collide."""
+    global _CTX
+    _CTX = ctx
     if core_bundles_camofox():
         logger.info("camofox plugin inactive: this Hermes core still bundles the Camofox browser backend")
         return
 
+    from . import camofox_policy
     from . import camofox_schemas as s
     from . import camofox_tools as t
     from .camofox_cli import handle_cli, setup_cli
+
+    camofox_policy.bind_context(ctx)
 
     ctx.register_auxiliary_task(
         t.VISION_TASK, display_name="Camofox browser vision",

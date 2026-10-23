@@ -181,17 +181,23 @@ backend.
 - `browser_vision` always answers through the auxiliary vision model; it has no numbered-label overlay.
 - `browser_console` evaluates JavaScript; the Camofox REST API has no console log capture.
 
-## Core seams this plugin asks for
+## Core guardrails and the ctx seams
 
-The plugin uses only documented plugin APIs except for these core helpers, which have no public
-plugin seam yet. Each is imported at its point of use:
+This plugin reuses Hermes's own browser guardrails through the public plugin context instead of
+reaching into core internals. When the running core exposes the backend seams, the plugin calls:
 
-| Import | Used for |
-|--------|----------|
-| `tools.url_safety.is_always_blocked_url`, `normalize_url_for_request` | the cloud-metadata floor and URL normalization on navigate |
-| `tools.website_policy.check_website_access` | the user's website blocklist |
-| `agent.redact.redact_sensitive_text`, `agent.redact._PREFIX_RE` | secret redaction in tool output; refusing URLs that embed a secret |
-| `tools.credential_files.to_agent_visible_cache_path` | the stored-snapshot path as the agent's file tools see it (Docker/SSH terminals) |
+| `ctx` seam | Used for |
+|------------|----------|
+| `ctx.evaluate_url_safety(url, auto_local=True)` | the navigate floor: secret-in-URL, cloud-metadata and the user's website blocklist. `auto_local=True` keeps Camofox's local-browser stance (the private/LAN floor is not applied, as in core's Camofox path) |
+| `ctx.redact_text(text, force=True)` | secret redaction in tool output, typed text and snapshots (a model boundary) |
+| `ctx.agent_visible_cache_path(path)` | the stored-snapshot path as the agent's file tools see it (Docker/SSH terminals) |
+| `ctx.core_bundles_tool("browser_camofox")` | staying inert on a core that still bundles the built-in Camofox backend |
+
+On a core that predates these seams the plugin falls back to the equivalent internal import at its
+point of use (`agent.redact`, `tools.url_safety`, `tools.website_policy`,
+`tools.credential_files`), so it keeps working across a version range. The `ctx` path imports no
+private core module. One piece still has no seam: URL normalization on navigate
+(`tools.url_safety.normalize_url_for_request`), imported directly on both paths.
 
 Vault fill (`browser_vault` filling a login form) does not reach the Camofox tab: core's vault tool
 would need a seam to evaluate its fill script through the active browser backend. Until then, type
