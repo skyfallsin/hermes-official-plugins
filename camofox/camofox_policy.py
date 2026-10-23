@@ -106,8 +106,11 @@ def redact_typed_text(value: Any, typed_text: Any) -> Any:
 # ---- Navigation policy ----
 
 def _normalized_url(url: str) -> str:
-    """ASCII-normalize a navigate target. No ctx seam yet, so this stays an internal import."""
-    from tools.url_safety import normalize_url_for_request
+    """ASCII-normalize a navigate target before handing it to the browser."""
+    ctx = _CTX
+    if ctx is not None and hasattr(ctx, "normalize_request_url"):
+        return ctx.normalize_request_url(url)
+    from tools.url_safety import normalize_url_for_request  # pre-seam fallback
     return normalize_url_for_request(url)
 
 

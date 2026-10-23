@@ -30,6 +30,10 @@ class FakeCtx:
         self.calls.append(("evaluate_url_safety", url, auto_local))
         return self._url_verdict
 
+    def normalize_request_url(self, url):
+        self.calls.append(("normalize_request_url", url))
+        return f"NORM::{url}"
+
     def agent_visible_cache_path(self, host_path, container_base="/root/.hermes"):
         self.calls.append(("agent_visible_cache_path", host_path))
         return f"VISIBLE::{host_path}"
@@ -64,11 +68,13 @@ def test_redact_output_walks_through_ctx_seam(bound_ctx):
 
 
 def test_navigation_allowed_returns_normalized_url_via_ctx(bound_ctx):
-    # Verdict None -> allowed. The ctx seam is consulted with auto_local=True (Camofox local stance).
+    # Verdict None -> allowed. The ctx seam is consulted with auto_local=True (Camofox local stance),
+    # and the normalized wire URL comes from the ctx normalize seam.
     norm, err = policy.navigation_policy_error("https://example.com/")
     assert err is None
-    assert isinstance(norm, str) and norm
+    assert norm == "NORM::https://example.com/"
     assert ("evaluate_url_safety", "https://example.com/", True) in bound_ctx.calls
+    assert ("normalize_request_url", "https://example.com/") in bound_ctx.calls
 
 
 def test_navigation_blocked_returns_ctx_verdict():

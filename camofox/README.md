@@ -189,15 +189,15 @@ reaching into core internals. When the running core exposes the backend seams, t
 | `ctx` seam | Used for |
 |------------|----------|
 | `ctx.evaluate_url_safety(url, auto_local=True)` | the navigate floor: secret-in-URL, cloud-metadata and the user's website blocklist. `auto_local=True` keeps Camofox's local-browser stance (the private/LAN floor is not applied, as in core's Camofox path) |
+| `ctx.normalize_request_url(url)` | the ASCII-normalized wire URL handed to the browser (IDN host to punycode, non-ASCII path/query percent-encoded) |
 | `ctx.redact_text(text, force=True)` | secret redaction in tool output, typed text and snapshots (a model boundary) |
 | `ctx.agent_visible_cache_path(path)` | the stored-snapshot path as the agent's file tools see it (Docker/SSH terminals) |
 | `ctx.core_bundles_tool("browser_camofox")` | staying inert on a core that still bundles the built-in Camofox backend |
 
 On a core that predates these seams the plugin falls back to the equivalent internal import at its
 point of use (`agent.redact`, `tools.url_safety`, `tools.website_policy`,
-`tools.credential_files`), so it keeps working across a version range. The `ctx` path imports no
-private core module. One piece still has no seam: URL normalization on navigate
-(`tools.url_safety.normalize_url_for_request`), imported directly on both paths.
+`tools.credential_files`), so it keeps working across a version range. On a core that exposes the
+seams the plugin's live path imports no private core module.
 
 Vault fill (`browser_vault` filling a login form) does not reach the Camofox tab: core's vault tool
 would need a seam to evaluate its fill script through the active browser backend. Until then, type
