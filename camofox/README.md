@@ -199,6 +199,10 @@ point of use (`agent.redact`, `tools.url_safety`, `tools.website_policy`,
 `tools.credential_files`), so it keeps working across a version range. On a core that exposes the
 seams the plugin's live path imports no private core module.
 
+Because those fallback imports still sit in the source, `hermes plugins validate` continues to
+*warn* about private imports for this plugin; the flagged lines are the dead fallback branches, not
+the live path. They can be removed once the minimum supported core ships the backend seams.
+
 Vault fill (`browser_vault` filling a login form) does not reach the Camofox tab: core's vault tool
 would need a seam to evaluate its fill script through the active browser backend. Until then, type
 credentials with `browser_type`. Snapshots mask values that look like secrets (API keys, tokens), but

